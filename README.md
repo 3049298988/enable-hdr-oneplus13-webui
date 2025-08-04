@@ -43,5 +43,7 @@ By default there are only few apps on OnePlus 13 which can enable HDR, this modu
 4. Choose the enable-hdr-oneplus13.zip file and install it.
 5. After installation, reboot your device for the module to take effect.
 
-## [Support me](https://ko-fi.com/oxford91530)
+## Support me
+
+[https://ko-fi.com/oxford91530](https://ko-fi.com/oxford91530)
 
