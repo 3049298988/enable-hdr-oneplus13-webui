@@ -39,7 +39,9 @@ awk '
   { print }
 ' "$APPLIST_FILE" "$TARGET_FILE" > "$MODULE_FILE"
 
-mount -o bind "$MODULE_FILE" "$TARGET_FILE"
+if [ -e "$MODULE_FILE" ]; then
+  mount -o bind "$MODULE_FILE" "$TARGET_FILE"
+fi
 
 # Log for debugging (optional)
 log_file="/data/local/tmp/enable-hdr-oneplus13.txt"
