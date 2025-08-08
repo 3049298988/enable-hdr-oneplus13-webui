@@ -34,6 +34,11 @@ By default there are only few apps on OnePlus 13 which can enable HDR, this modu
 29. Youku (International version)
 30. AFUSEKT
 31. M3U
+32. Google Photos
+33. X (formerly Twitter)
+34. Tubi
+35. Google TV (formerly Google Play Movies & TV)
+36. Archos Video Player
 
 ## How to use it?
 
