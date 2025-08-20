@@ -15,9 +15,9 @@
 
 WebUI
 
-- 安装模块后, 用浏览器访问:
+- 安装模块后, 安装一下APK然后授予其ROOT权限:
 
-http://<设备IP>:8234
+ >https://github.com/5ec1cff/KsuWebUIStandalone/releases/download/v1.0/KsuWebUI-1.0-34-release.apk
 
 
 - 功能:
