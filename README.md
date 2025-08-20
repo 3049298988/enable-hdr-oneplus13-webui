@@ -15,9 +15,9 @@ App list
 
 WebUI
 
-- Once the module is installed, open your browser and visit:
+- Once the module is installed, download this APK file and install it, do not forget to grant it root permissions:
 
-http://<device-ip>:8234
+ >https://github.com/5ec1cff/KsuWebUIStandalone/releases/download/v1.0/KsuWebUI-1.0-34-release.apk
 
 
 - Features:
