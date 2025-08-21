@@ -1,4 +1,3 @@
-
 // Simple i18n
 let LANG = 'auto'; // 'auto'|'zh-Hans'|'zh-Hant'|'en'
 const LS_KEY = 'hdr_webui_lang';

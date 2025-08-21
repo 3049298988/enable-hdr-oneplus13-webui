@@ -1,4 +1,50 @@
+.header{
+  position:sticky; 
+  top:0; 
+  z-index:100; 
+  background:rgba(11,15,20,0.75); 
+  backdrop-filter:blur(8px); 
+  border-bottom:1px solid #1f2937;
+}
 
-.header{position:sticky; top:0; z-index:100; background:rgba(11,15,20,0.75); backdrop-filter:blur(8px); border-bottom:1px solid #1f2937;}
-.header .row{ display:flex; align-items:center; justify-content:center; padding:10px 12px; }
-.header h1{ margin:0; font-size:18px; letter-spacing:.2px; }
+.header .row{ 
+  display:flex; 
+  align-items:center; 
+  justify-content:space-between; 
+  padding:10px 12px; 
+  gap:12px; 
+  flex-wrap:wrap; 
+}
+
+.header h1{ 
+  margin:0; 
+  font-size:18px; 
+  letter-spacing:.2px; 
+  flex-shrink:0; 
+}
+
+/* 支持搜索框布局 */
+.header .search{
+  margin-left:auto;
+  display:flex;
+  gap:8px;
+  align-items:center;
+  position:relative;
+}
+
+/* 响应式设计 */
+@media (max-width:600px){
+  .header .row{
+    flex-direction:column;
+    align-items:stretch;
+    gap:8px;
+  }
+  .header .search{
+    margin-left:0;
+    width:100%;
+  }
+  .header .search input{
+    width:100%;
+    min-width:0;
+  }
+}
