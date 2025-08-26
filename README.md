@@ -20,9 +20,16 @@ WebUI
  >https://github.com/5ec1cff/KsuWebUIStandalone/releases/download/v1.0/KsuWebUI-1.0-34-release.apk
 
 
-- Features:
- - Search apps by name or package
- - Check/uncheck apps to toggle HDR
+- **New Enhanced Features:**
+ - **Smart Search**: Real-time search by app name or package name with instant filtering
+ - **Intelligent App Management**: Automatically detects and displays all installed apps
+ - **Persistent App Name Caching**: Remembers app names across sessions for faster loading
+ - **Batch Operations**: Select all/deselect all apps with one click
+ - **Improved UI**: Modern dropdown menu with better accessibility and mobile support
+ - **Performance Optimized**: Fast initial loading with background label fetching
+ - **Smart Sorting**: Selected apps automatically appear at the top for easier management
+ - **Enhanced Visual Feedback**: Loading indicators and status counters
+ - **Robust Error Handling**: Better logging and error recovery mechanisms
  - Save settings (requires reboot to apply)
 
 How to use it?

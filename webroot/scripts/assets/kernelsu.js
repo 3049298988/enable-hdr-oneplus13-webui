@@ -124,10 +124,8 @@ export function toast(message) {
     try {
         if (typeof ksu !== 'undefined') {
             ksu.toast(message);
-        } else {
-            console.log(message);
         }
     } catch (error) {   
-        console.error("Error displaying toast:", error);
+        // Silently fail for production
     }
 }

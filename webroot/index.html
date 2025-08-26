@@ -2,7 +2,7 @@
 <html lang="zh">
 <head>
   <meta charset="UTF-8" />
-  <title>HDR App 选择器</title>
+  <title>HDR App 选择器 - OnePlus 13</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <!-- 保持原有样式结构，不在 HTML 内写 style -->
@@ -14,13 +14,13 @@
   <header class="header">
     <!-- 第一行：标题 -->
     <div class="row">
-      <h1>HDR App 选择器</h1>
+      <h1>🎮 HDR App 选择器</h1>
     </div>
 
-    <!-- 第二行：搜索栏（保持原有类名与ID，以套用原样式） -->
+    <!-- 第二行：搜索栏和菜单 -->
     <div class="row">
-      <div class="search fullwidth">
-        <input id="search" placeholder="搜索（包名 / 应用名）" autocapitalize="none" />
+      <div class="search-container">
+        <input id="search" placeholder="🔍 搜索应用（包名 / 应用名）" autocapitalize="none" />
         <div class="loading" id="loading">
           <!-- 保留简洁的loading结构，样式由原CSS负责 -->
           <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
@@ -28,23 +28,52 @@
           </svg>
           <span>载入中</span>
         </div>
+        
+        <!-- 菜单按钮 -->
+        <div class="menu-container">
+          <button id="menuToggle" class="menu-toggle" aria-label="打开菜单" title="工具菜单">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+              <circle cx="12" cy="12" r="2"></circle>
+              <circle cx="12" cy="5" r="2"></circle>
+              <circle cx="12" cy="19" r="2"></circle>
+            </svg>
+            <span class="menu-fallback">⋮</span>
+          </button>
+          
+          <!-- 下拉菜单 -->
+          <div id="menuDropdown" class="menu-dropdown">
+            <div class="menu-header">
+              <span class="menu-title">工具菜单</span>
+              <span id="count" class="menu-badge"></span>
+            </div>
+            <div class="menu-items">
+              <button id="reload" class="menu-item">
+                <span class="menu-icon">🔄</span>
+                <span class="menu-text">重新载入</span>
+              </button>
+              <button id="selectAll" class="menu-item">
+                <span class="menu-icon">☑️</span>
+                <span class="menu-text">全选</span>
+              </button>
+              <button id="deselectAll" class="menu-item">
+                <span class="menu-icon">❌</span>
+                <span class="menu-text">全不选</span>
+              </button>
+              <button id="save" class="menu-item primary">
+                <span class="menu-icon">💾</span>
+                <span class="menu-text">保存配置</span>
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
-    </div>
-
-    <!-- 第三行：按钮与计数（沿用原ID） -->
-    <div class="toolbar">
-      <button id="reload">重新载入</button>
-      <button id="selectAll">全选</button>
-      <button id="deselectAll">全不选</button>
-      <button id="save">保存到 appList.xml</button>
-      <span id="count" class="badge"></span>
     </div>
   </header>
 
   <!-- 列表容器（沿用原ID/类名） -->
   <main class="container">
     <div id="list" class="list"></div>
-    <div id="empty" class="empty" style="display:none">没有找到应用。</div>
+    <div id="empty" class="empty" style="display:none">📱 没有找到匹配的应用</div>
   </main>
 
   <!-- 列表项模板（沿用原结构：checkbox + info(name/pkg)） -->

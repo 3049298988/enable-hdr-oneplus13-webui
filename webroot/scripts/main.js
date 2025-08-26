@@ -7,6 +7,7 @@ const APP_LIST_XMLS = [
   `${MODULE_DIR}/appList.xml`,   // 你模块的 XML（大写 L）
 ];
 const LOG_PATH      = `${MODULE_DIR}/webui.log`;
+const CACHE_PATH    = `${MODULE_DIR}/app_cache.json`; // 应用名称缓存文件
 // 移除 LOG_MAX_BYTES，因为每次启动都会清除日志
 
 const $ = (id) => document.getElementById(id);
@@ -22,6 +23,9 @@ let APP_MAP = new Map();   // pkg -> app
 let SELECTED = new Set();  // 预选集合
 let FILTER_Q = '';
 let NEED_SORT_SELECTED = false; // 是否需要将已选应用排到前面
+let LABEL_CACHE = new Map(); // 内存中的应用名称缓存 pkg -> name
+let PERSISTENT_CACHE = new Map(); // 从文件读取的持久化缓存 pkg -> {name, timestamp}
+let CACHE_DIRTY = false; // 缓存是否有未保存的更改
 
 // —— 工具 & 日志 ——
 const isPromise = (x) => !!x && typeof x.then === 'function';
@@ -38,7 +42,6 @@ function esc(s){ return String(s).replace(/\\/g,'\\\\').replace(/"/g,'\\"').repl
 async function clearLogOnStartup(){
   try{
     await runExec(`sh -c 'rm -f "${LOG_PATH}" "${LOG_PATH}.1" 2>/dev/null || true'`);
-    console.log('Previous logs cleared');
   }catch(_){}
 }
 
@@ -49,8 +52,339 @@ async function fileLog(stage,msg,data){
     await runExec(`sh -c 'printf "%s\\n" "${esc(line)}" >> "${LOG_PATH}"'`);
   }catch(_){}
 }
+
+// ---------- 持久化缓存管理 ----------
+// 初始化缓存文件（如果不存在则创建空文件）
+async function initCacheFile(){
+  try{
+    // 检查文件是否存在
+    const checkResult = await runExec(`sh -c '[ -f "${CACHE_PATH}" ] && echo "exists" || echo "not_exists"'`);
+    const exists = (checkResult.stdout || '').trim() === 'exists';
+    
+    if (!exists) {
+      await fileLog('cache','init-create',{ path: CACHE_PATH });
+      
+      // 确保目录存在
+      await ensureCacheDir();
+      
+      // 创建空的缓存文件
+      const emptyCache = JSON.stringify({}, null, 2);
+      const cmd = `sh -c 'cat > "${CACHE_PATH}" << "EOF"
+${emptyCache}
+EOF
+chmod 0644 "${CACHE_PATH}"'`;
+      
+      const r = await runExec(cmd);
+      if (r.errno === 0) {
+        await fileLog('cache','init-success',{ path: CACHE_PATH });
+      } else {
+        await fileLog('cache','init-error',{ errno: r.errno, stderr: r.stderr, path: CACHE_PATH });
+      }
+    } else {
+      await fileLog('cache','init-exists',{ path: CACHE_PATH });
+    }
+  }catch(e){
+    await fileLog('cache','init-exception',{ error: String(e), path: CACHE_PATH });
+  }
+}
+
+async function loadPersistentCache(){
+  try{
+    await fileLog('cache','load-start',{ path: CACHE_PATH });
+    
+    // 首先尝试初始化缓存文件
+    await initCacheFile();
+    
+    const r = await runExec(`sh -c 'cat "${CACHE_PATH}" 2>/dev/null'`);
+    const content = (r.stdout || '').trim();
+    
+    if (!content) {
+      await fileLog('cache','load-empty',{ path: CACHE_PATH });
+      return;
+    }
+
+    // 尝试解析 JSON
+    try{
+      const cacheData = JSON.parse(content);
+      let loadedCount = 0;
+      
+      // 验证数据格式并加载
+      if (cacheData && typeof cacheData === 'object') {
+        for (const [pkg, info] of Object.entries(cacheData)) {
+          if (info && typeof info === 'object' && info.name && typeof info.name === 'string') {
+            PERSISTENT_CACHE.set(pkg, {
+              name: info.name,
+              timestamp: info.timestamp || Date.now()
+            });
+            LABEL_CACHE.set(pkg, info.name); // 同时加载到内存缓存
+            loadedCount++;
+          }
+        }
+      }
+      
+      await fileLog('cache','load-success',{ 
+        loadedCount, 
+        totalEntries: Object.keys(cacheData || {}).length 
+      });
+      
+    }catch(parseError){
+      await fileLog('cache','load-parse-error',{ 
+        error: String(parseError),
+        contentLength: content.length 
+      });
+      // 解析错误时不抛出异常，继续运行
+    }
+    
+  }catch(readError){
+    await fileLog('cache','load-read-error',{ error: String(readError) });
+  }
+}
+
+// 确保缓存目录存在
+async function ensureCacheDir(){
+  try{
+    // 确保模块目录存在并具有正确权限
+    await runExec(`sh -c 'mkdir -p "$(dirname "${CACHE_PATH}")" && chmod 755 "$(dirname "${CACHE_PATH}")"'`);
+    return true;
+  }catch(e){
+    await fileLog('cache','ensure-dir-error',{ error: String(e) });
+    return false;
+  }
+}
+
+// 保存缓存到文件
+async function savePersistentCache(){
+  if (!CACHE_DIRTY) return; // 没有更改则不保存
+  
+  try{
+    await fileLog('cache','save-start',{ cacheSize: PERSISTENT_CACHE.size });
+    
+    // 确保目录存在
+    const dirReady = await ensureCacheDir();
+    if (!dirReady) {
+      await fileLog('cache','save-abort','Directory not ready');
+      return;
+    }
+    
+    // 构建保存对象
+    const cacheData = {};
+    for (const [pkg, info] of PERSISTENT_CACHE.entries()) {
+      cacheData[pkg] = {
+        name: info.name,
+        timestamp: info.timestamp || Date.now()
+      };
+    }
+    
+    // 生成 JSON 内容
+    const jsonContent = JSON.stringify(cacheData, null, 2);
+    const tempFile = `${CACHE_PATH}.tmp`;
+    
+    // 写入临时文件，然后原子性地移动到目标位置
+    const cmd = `sh -c 'cat > "${tempFile}" << "EOF"
+${jsonContent}
+EOF
+if [ $? -eq 0 ]; then
+  mv "${tempFile}" "${CACHE_PATH}" && chmod 0644 "${CACHE_PATH}"
+else
+  rm -f "${tempFile}" 2>/dev/null || true
+  exit 1
+fi'`;
+
+    const r = await runExec(cmd);
+    
+    if (r.errno === 0) {
+      CACHE_DIRTY = false; // 标记为已保存
+      await fileLog('cache','save-success',{ 
+        entriesCount: Object.keys(cacheData).length,
+        fileSize: jsonContent.length,
+        filePath: CACHE_PATH
+      });
+    } else {
+      await fileLog('cache','save-error',{ 
+        errno: r.errno, 
+        stderr: r.stderr,
+        filePath: CACHE_PATH
+      });
+    }
+    
+  }catch(saveError){
+    await fileLog('cache','save-exception',{ error: String(saveError) });
+  }
+}
+
+// 添加或更新缓存条目
+function updateCache(pkg, name) {
+  if (!pkg || !name) return;
+  
+  const existing = PERSISTENT_CACHE.get(pkg);
+  const now = Date.now();
+  
+  // 如果名称发生变化，更新缓存
+  if (!existing || existing.name !== name) {
+    PERSISTENT_CACHE.set(pkg, {
+      name: name,
+      timestamp: now
+    });
+    LABEL_CACHE.set(pkg, name); // 同步到内存缓存
+    CACHE_DIRTY = true; // 标记缓存需要保存
+    
+    // 立即更新UI中的显示
+    const row = document.querySelector(`.card[data-pkg="${pkg}"]`);
+    if (row) {
+      const nameEl = row.querySelector('.name');
+      if (nameEl && nameEl.textContent !== name) {
+        nameEl.textContent = name;
+      }
+    }
+  }
+}
+
+// 批量更新缓存
+function batchUpdateCache(updates) {
+  let changeCount = 0;
+  for (const [pkg, name] of updates.entries()) {
+    if (pkg && name) {
+      const existing = PERSISTENT_CACHE.get(pkg);
+      if (!existing || existing.name !== name) {
+        updateCache(pkg, name);
+        changeCount++;
+      }
+    }
+  }
+  
+  if (changeCount > 0) {
+    // 延迟保存，避免频繁写入
+    setTimeout(() => savePersistentCache(), 2000);
+  }
+}
+
+// 清理缓存中不存在的应用
+async function cleanupCache() {
+  if (PERSISTENT_CACHE.size === 0) return;
+  
+  const currentPkgs = new Set(APPS.map(app => app.pkg));
+  const cacheKeys = Array.from(PERSISTENT_CACHE.keys());
+  let removedCount = 0;
+  
+  for (const pkg of cacheKeys) {
+    if (!currentPkgs.has(pkg)) {
+      PERSISTENT_CACHE.delete(pkg);
+      LABEL_CACHE.delete(pkg);
+      removedCount++;
+      CACHE_DIRTY = true;
+    }
+  }
+  
+  if (removedCount > 0) {
+    await fileLog('cache','cleanup',{ removedCount, remainingCount: PERSISTENT_CACHE.size });
+    await savePersistentCache();
+  }
+}
+
+// 页面退出时保存缓存
+function setupCacheAutoSave() {
+  // 页面卸载前保存
+  window.addEventListener('beforeunload', () => {
+    if (CACHE_DIRTY) {
+      // 使用 sendBeacon 进行最后的保存尝试
+      try {
+        savePersistentCache();
+      } catch(_) {}
+    }
+  });
+  
+  // 页面隐藏时保存
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden && CACHE_DIRTY) {
+      savePersistentCache();
+    }
+  });
+  
+  // 定期保存（每5分钟）
+  setInterval(() => {
+    if (CACHE_DIRTY) {
+      savePersistentCache();
+    }
+  }, 5 * 60 * 1000);
+}
 function showLoading(show){ const el=loadEl(); if(el) el.style.display = show?'':'none'; }
-function setCount(sel,total){ const el=countEl(); if(el) el.textContent = `已选 ${sel} / 共 ${total}`; }
+function setCount(sel,total){ 
+  const el=countEl(); 
+  if(el) {
+    if (sel === 0) {
+      el.style.display = 'none';
+    } else {
+      el.style.display = 'inline-block';
+      el.textContent = `${sel} / ${total}`;
+    }
+  }
+}
+
+// 菜单交互逻辑
+async function setupMenuInteractions() {
+  await fileLog('menu','function-start');
+  
+  const menuToggle = document.getElementById('menuToggle');
+  const menuDropdown = document.getElementById('menuDropdown');
+  
+  await fileLog('menu','elements-check',{ 
+    menuToggle: !!menuToggle, 
+    menuDropdown: !!menuDropdown 
+  });
+  
+  if (!menuToggle || !menuDropdown) {
+    await fileLog('menu','elements-missing');
+    return;
+  }
+  
+  // 简化的切换函数
+  function toggleMenu(e) {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    
+    const isShown = menuDropdown.classList.contains('show');
+    
+    if (isShown) {
+      menuDropdown.classList.remove('show');
+    } else {
+      menuDropdown.classList.add('show');
+    }
+  }
+  
+  // 隐藏菜单
+  function hideMenu() {
+    menuDropdown.classList.remove('show');
+  }
+  
+  // 绑定菜单按钮事件
+  await fileLog('menu','binding-toggle');
+  
+  menuToggle.onclick = function(e) {
+    toggleMenu(e);
+  };
+  
+  // 查找菜单项
+  const menuItems = menuDropdown.querySelectorAll('.menu-item');
+  await fileLog('menu','found-items',{ count: menuItems.length });
+  
+  // 绑定菜单项事件
+  menuItems.forEach((item, index) => {
+    item.onclick = function() {
+      setTimeout(hideMenu, 150);
+    };
+  });
+  
+  // 简化的外部点击处理
+  document.addEventListener('click', function(e) {
+    if (!menuToggle.contains(e.target) && !menuDropdown.contains(e.target)) {
+      hideMenu();
+    }
+  });
+  
+  await fileLog('menu','setup-complete');
+}
 
 // ---------- 已选读取/保存 ----------
 async function loadSelectedFromXml(){
@@ -87,7 +421,6 @@ async function loadSelectedFromXml(){
           if (pkg) {
             found.add(pkg);
             foundInFile++;
-            console.log('Found app via line parsing:', pkg);
           }
           continue;
         }
@@ -99,7 +432,6 @@ async function loadSelectedFromXml(){
           if (pkg) {
             found.add(pkg);
             foundInFile++;
-            console.log('Found app via line parsing (legacy):', pkg);
           }
           continue;
         }
@@ -114,13 +446,11 @@ async function loadSelectedFromXml(){
       
     }catch(e){
       await fileLog('loadSelected','line-parse-error',{ path: p, error: String(e) });
-      console.error("Line parsing error:", e);
     }
   }
 
   SELECTED = found;
   await fileLog('loadSelected','complete',{ totalSelected: SELECTED.size, selectedApps: Array.from(SELECTED) });
-  console.log('Loaded selected apps:', Array.from(SELECTED));
 }
 
 async function saveSelected(){
@@ -237,20 +567,101 @@ async function listPackagesFast(){
 
 // ---------- 快速通道拿应用名（不阻塞 UI） ——
 function fastLabelByAPI(pkg){
+  // 优先检查持久化缓存
+  if (PERSISTENT_CACHE.has(pkg)) {
+    const cached = PERSISTENT_CACHE.get(pkg);
+    LABEL_CACHE.set(pkg, cached.name); // 同步到内存缓存
+    return cached.name;
+  }
+  
+  // 再检查内存缓存
+  if (LABEL_CACHE.has(pkg)) {
+    return LABEL_CACHE.get(pkg);
+  }
+  
+  let label = null;
+  
   try{
     if (typeof window.ksu?.getPackagesInfo === 'function'){
       const info = JSON.parse(window.ksu.getPackagesInfo(`[${pkg}]`));
-      if (info?.[0]?.appLabel) return String(info[0].appLabel);
+      if (info?.[0]?.appLabel) {
+        label = String(info[0].appLabel);
+      }
     }
   }catch{}
-  try{
-    if (typeof window.$packageManager !== 'undefined'){
-      const ai = window.$packageManager.getApplicationInfo(pkg, 0, 0);
-      const label = ai?.getLabel?.();
-      if (label) return String(label);
+  
+  if (!label) {
+    try{
+      if (typeof window.$packageManager !== 'undefined'){
+        const ai = window.$packageManager.getApplicationInfo(pkg, 0, 0);
+        const labelResult = ai?.getLabel?.();
+        if (labelResult) {
+          label = String(labelResult);
+        }
+      }
+    }catch{}
+  }
+  
+  // 如果获取到标签，更新缓存
+  if (label) {
+    updateCache(pkg, label);
+  }
+  
+  return label;
+}
+
+// 批量获取应用信息
+async function batchGetLabels(pkgs) {
+  const results = new Map();
+  const toFetch = [];
+  
+  // 先从缓存中获取已有的标签
+  for (const pkg of pkgs) {
+    if (PERSISTENT_CACHE.has(pkg)) {
+      const cached = PERSISTENT_CACHE.get(pkg);
+      results.set(pkg, cached.name);
+      LABEL_CACHE.set(pkg, cached.name); // 同步到内存
+    } else if (LABEL_CACHE.has(pkg)) {
+      results.set(pkg, LABEL_CACHE.get(pkg));
+    } else {
+      toFetch.push(pkg);
     }
-  }catch{}
-  return null;
+  }
+  
+  // 只为未缓存的包获取标签
+  if (toFetch.length > 0) {
+    try {
+      if (typeof window.ksu?.getPackagesInfo === 'function' && toFetch.length > 1) {
+        const pkgArray = JSON.stringify(toFetch);
+        const infos = JSON.parse(window.ksu.getPackagesInfo(pkgArray));
+        if (Array.isArray(infos)) {
+          const cacheUpdates = new Map();
+          infos.forEach((info, index) => {
+            if (info?.appLabel && toFetch[index]) {
+              const label = String(info.appLabel);
+              results.set(toFetch[index], label);
+              cacheUpdates.set(toFetch[index], label);
+            }
+          });
+          
+          // 批量更新缓存
+          if (cacheUpdates.size > 0) {
+            batchUpdateCache(cacheUpdates);
+          }
+        }
+      }
+    } catch(e) {
+      // 失败时逐个尝试快速API
+      for (const pkg of toFetch) {
+        const label = fastLabelByAPI(pkg);
+        if (label) {
+          results.set(pkg, label);
+        }
+      }
+    }
+  }
+  
+  return results;
 }
 
 // ---------- 慢通道（只对出现在视口的项尝试）：pm path → aapt → dumpsys —— 
@@ -264,18 +675,33 @@ async function labelByAapt(pkg){
   const aapt = await ensureAapt();
   if (!aapt) return '';
   const r = await runExec(`sh -c '${aapt} dump badging "${apk}" 2>/dev/null | grep -m 1 "application-label"'`);
-  if (r.errno===0 && r.stdout) return parseAaptLabel(r.stdout);
+  if (r.errno===0 && r.stdout) {
+    const label = parseAaptLabel(r.stdout);
+    if (label) {
+      updateCache(pkg, label); // 更新缓存
+    }
+    return label;
+  }
   return '';
 }
+
 async function labelByDump(pkg){
   const tries = [ `dumpsys package "${pkg}"`, `pm dump "${pkg}"` ];
   for (const cmd of tries){
     const r = await runExec(cmd);
     if (r.errno===0 && r.stdout){
       let m = r.stdout.match(/application-label:\s*(.*)/);
-      if (m && m[1]) return m[1].trim();
+      if (m && m[1]) {
+        const label = m[1].trim();
+        updateCache(pkg, label); // 更新缓存
+        return label;
+      }
       m = r.stdout.match(/label=([^\n]+)/);
-      if (m && m[1]) return m[1].trim();
+      if (m && m[1]) {
+        const label = m[1].trim();
+        updateCache(pkg, label); // 更新缓存
+        return label;
+      }
     }
   }
   return '';
@@ -291,7 +717,7 @@ function parseAaptLabel(output) {
 const LABEL_QUEUE = [];
 const LABEL_DONE  = new Set();
 let   LABEL_RUNNING = 0;
-const LABEL_CONCURRENCY = 3;
+const LABEL_CONCURRENCY = 8; // 增加并发数到8
 
 async function labelWorker(){
   if (LABEL_RUNNING >= LABEL_CONCURRENCY) return;
@@ -301,12 +727,25 @@ async function labelWorker(){
       const app = LABEL_QUEUE.shift();
       if (!app || app.labeled) continue;
 
-      // 快速通道先试（一般足够快）
-      let label = fastLabelByAPI(app.pkg);
+      // 首先检查缓存（持久化和内存）
+      let label = null;
+      if (PERSISTENT_CACHE.has(app.pkg)) {
+        const cached = PERSISTENT_CACHE.get(app.pkg);
+        label = cached.name;
+        LABEL_CACHE.set(app.pkg, label); // 同步到内存缓存
+      } else if (LABEL_CACHE.has(app.pkg)) {
+        label = LABEL_CACHE.get(app.pkg);
+      }
 
-      // 慢通道只在必要时使用
-      if (!label) label = await labelByAapt(app.pkg);
-      if (!label) label = await labelByDump(app.pkg);
+      // 如果缓存中没有，尝试获取
+      if (!label) {
+        // 快速通道先试（一般足够快）
+        label = fastLabelByAPI(app.pkg);
+
+        // 慢通道只在必要时使用
+        if (!label) label = await labelByAapt(app.pkg);
+        if (!label) label = await labelByDump(app.pkg);
+      }
 
       if (label && label !== app.name){
         app.name = label;
@@ -316,8 +755,13 @@ async function labelWorker(){
           const nameEl = row.querySelector('.name');
           if (nameEl) nameEl.textContent = label;
         }
+        
+        // 如果标签是新获取的（不是从缓存来的），更新缓存
+        if (!PERSISTENT_CACHE.has(app.pkg) || PERSISTENT_CACHE.get(app.pkg).name !== label) {
+          updateCache(app.pkg, label);
+        }
       }
-      await fileLog('label','update',{ pkg: app.pkg, got: !!label });
+      await fileLog('label','update',{ pkg: app.pkg, got: !!label, fromCache: PERSISTENT_CACHE.has(app.pkg) });
     }
   } finally {
     LABEL_RUNNING--;
@@ -411,7 +855,6 @@ function render(apps){
   }
 
   setCount(SELECTED.size, APPS.length);
-  console.log('Rendered apps, selected count:', SELECTED.size);
 }
 
 // ---------- 过滤 ---------- 
@@ -434,54 +877,161 @@ async function init(){
   await fileLog('init','start',{ ua:(navigator?.userAgent)||'', url:(location?.href)||'' });
   showLoading(true);
   try{
-    // 1) 先读取预勾选（XML）
-    await loadSelectedFromXml();
-    console.log('Selected apps after loading XML:', Array.from(SELECTED));
+    // 1) 先加载持久化缓存
+    await loadPersistentCache();
 
-    // 2) 秒拿包名并渲染（标题先用包名尾段）
+    // 2) 读取预勾选（XML）
+    await loadSelectedFromXml();
+
+    // 3) 秒拿包名并渲染（标题优先用缓存，否则用包名尾段）
     const pkgs = await listPackagesFast();
     APPS = pkgs.map(pkg => {
-      const tail = pkg.split('.').pop() || pkg;
-      const quick = tail.charAt(0).toUpperCase() + tail.slice(1);
-      const app = { pkg, name: quick, labeled: false };
-      APP_MAP.set(pkg, app);
-      return app;
+      let name;
+      if (PERSISTENT_CACHE.has(pkg)) {
+        // 优先使用缓存中的名称
+        name = PERSISTENT_CACHE.get(pkg).name;
+        LABEL_CACHE.set(pkg, name); // 同步到内存缓存
+        return { pkg, name, labeled: true }; // 标记为已标记
+      } else {
+        // 否则使用包名尾段
+        const tail = pkg.split('.').pop() || pkg;
+        name = tail.charAt(0).toUpperCase() + tail.slice(1);
+        return { pkg, name, labeled: false };
+      }
     });
+
+    // 更新应用映射
+    APPS.forEach(app => APP_MAP.set(app.pkg, app));
     
-    // 3) 重新加载时需要排序
+    // 4) 重新加载时需要排序
     NEED_SORT_SELECTED = true;
     
-    // 4) 渲染列表（此时 SELECTED 已经包含了从 XML 读取的数据）
+    // 5) 对于未缓存的应用，尝试批量获取前50个的名称
+    const unlabeledApps = APPS.filter(app => !app.labeled);
+    const firstBatch = unlabeledApps.slice(0, 50);
+    if (firstBatch.length > 0) {
+      const batchLabels = await batchGetLabels(firstBatch.map(a => a.pkg));
+      
+      // 应用批量获取的结果
+      firstBatch.forEach(app => {
+        if (batchLabels.has(app.pkg)) {
+          app.name = batchLabels.get(app.pkg);
+          app.labeled = true;
+        }
+      });
+    }
+    
+    // 6) 渲染列表（此时 SELECTED 已经包含了从 XML 读取的数据）
     render(APPS);
 
-    // 5) 后台懒加载：把"首屏前 30 个"先排队补齐名称，提高主观速度
-    LABEL_QUEUE.push(...APPS.slice(0, 30));
-    runLabelWorkers();
+    // 7) 立即设置菜单交互（最高优先级）
+    await fileLog('menu','setup-start');
+    try {
+      await setupMenuInteractions();
+      await fileLog('menu','setup-success');
+    } catch(e) {
+      await fileLog('menu','setup-error',{ error: String(e) });
+    }
+
+    // 8) 延迟处理剩余未标记的应用（低优先级）
+    setTimeout(() => {
+      const remaining = APPS.filter(app => !app.labeled);
+      if (remaining.length > 0) {
+        LABEL_QUEUE.push(...remaining);
+        runLabelWorkers();
+      }
+    }, 500); // 延迟500ms，让菜单优先设置
     
-    await fileLog('init','first-render',{ count: APPS.length, preselected: SELECTED.size });
+    // 8) 对于前100个应用中未缓存的，立即尝试快速API
+    setTimeout(async () => {
+      const quickBatch = APPS.slice(0, 100).filter(app => !app.labeled);
+      const cacheUpdates = new Map();
+      
+      for (const app of quickBatch) {
+        const label = fastLabelByAPI(app.pkg);
+        if (label && label !== app.name) {
+          app.name = label;
+          app.labeled = true;
+          cacheUpdates.set(app.pkg, label);
+          
+          // 立即更新UI
+          const row = document.querySelector(`.card[data-pkg="${app.pkg}"]`);
+          if (row) {
+            const nameEl = row.querySelector('.name');
+            if (nameEl) nameEl.textContent = label;
+          }
+        }
+      }
+      
+      // 批量更新缓存
+      if (cacheUpdates.size > 0) {
+        batchUpdateCache(cacheUpdates);
+      }
+      
+    }, 500); // 500ms后开始快速标记，确保菜单优先设置
+    
+    const cachedCount = APPS.filter(app => app.labeled).length;
+    await fileLog('init','first-render',{ 
+      count: APPS.length, 
+      preselected: SELECTED.size, 
+      cachedCount: cachedCount,
+      uncachedCount: APPS.length - cachedCount
+    });
+    
+    // 9) 设置缓存自动保存和清理
+    setupCacheAutoSave();
+    
+    // 10) 清理缓存中不存在的应用（延迟执行，避免阻塞UI）
+    setTimeout(() => cleanupCache(), 5000);
+    
   }catch(e){
     await fileLog('init','error',{ error: String(e) });
-    console.error('Init error:', e);
   }finally{
     showLoading(false);
     await fileLog('init','complete');
   }
 
-  // 事件
-  const s = searchEl(); if (s) s.addEventListener('input', applyFilter);
-  const r = $('reload'); if (r) r.onclick = async () => {
-    NEED_SORT_SELECTED = true; // 重新加载时需要排序
-    await init();
-  };
-  const sa= $('selectAll'); if (sa) sa.onclick = () => { 
-    APPS.forEach(a=>SELECTED.add(a.pkg)); 
-    applyFilter(); 
-  };
-  const da= $('deselectAll'); if (da) da.onclick = () => { 
-    SELECTED.clear(); 
-    applyFilter(); 
-  };
-  const sv= $('save'); if (sv) sv.onclick = async () => saveSelected();
+  
+  // 事件绑定
+  const s = searchEl(); 
+  if (s) {
+    s.addEventListener('input', applyFilter);
+  }
+  
+  const r = $('reload'); 
+  if (r) {
+    const reloadHandler = async () => {
+      NEED_SORT_SELECTED = true; // 重新加载时需要排序
+      await init();
+    };
+    r.addEventListener('click', reloadHandler);
+  }
+  
+  const sa = $('selectAll'); 
+  if (sa) {
+    const selectAllHandler = () => { 
+      APPS.forEach(a=>SELECTED.add(a.pkg)); 
+      applyFilter(); 
+    };
+    sa.addEventListener('click', selectAllHandler);
+  }
+  
+  const da = $('deselectAll'); 
+  if (da) {
+    const deselectAllHandler = () => { 
+      SELECTED.clear(); 
+      applyFilter(); 
+    };
+    da.addEventListener('click', deselectAllHandler);
+  }
+  
+  const sv = $('save'); 
+  if (sv) {
+    const saveHandler = async () => {
+      await saveSelected();
+    };
+    sv.addEventListener('click', saveHandler);
+  }
 }
 
 document.addEventListener('DOMContentLoaded', () => { init(); });
