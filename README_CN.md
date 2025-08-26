@@ -34,8 +34,8 @@ WebUI
 
 如何使用?
 
-1. 确保设备已通过 [Magisk] 或 [KernelSU] 获取 Root。
-2. 前往 [Releases] 下载模块(enable-hdr-oneplus13.zip)。
+1. 确保设备已通过 [Magisk](https://topjohnwu.github.io/Magisk/install.html) 或 [KernelSU](https://kernelsu.org/guide/installation.html) 获取 Root。
+2. 前往 [Releases](https://github.com/HoneyWhiteCloud/enable-hdr-oneplus13-webui/releases) 下载模块(enable-hdr-oneplus13-webui.zip)。
 3. 在 Root 管理工具的 Modules 页面选择「从存储安装」。
 4. 选择下载好的 zip 并安装。
 5. 安装完成后重启设备即可生效。

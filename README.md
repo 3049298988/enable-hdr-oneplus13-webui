@@ -35,8 +35,8 @@ WebUI
 How to use it?
 
 1. Root your device with [Magisk](https://topjohnwu.github.io/Magisk/install.html) or [KernelSU](https://kernelsu.org/guide/installation.html).
-2. [Download](https://github.com/oxford232/enable-hdr-oneplus13/releases) the module (enable-hdr-oneplus13.zip).
+2. [Download](https://github.com/HoneyWhiteCloud/enable-hdr-oneplus13-webui/releases) the module (enable-hdr-oneplus13-webui.zip).
 3. Go to the Modules section in your root management app and select Install from storage.
-4. Choose the enable-hdr-oneplus13.zip file and install it.
+4. Choose the enable-hdr-oneplus13-webui.zip file and install it.
 5. After installation, reboot your device for the module to take effect.
 6. Open the WebUI to customize the app list.
